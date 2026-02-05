@@ -1,0 +1,28 @@
+# Outputs
+export/
+
+# Virtual envs
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyd
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+
+# Env files
+.env
+.env.*
+!.env.example
+
+# Logs and temp files
+*.log
+*.tmp
+
+# OS junk
+.DS_Store
+Thumbs.db
