@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="420" viewBox="0 0 960 420" role="img" aria-labelledby="title desc">
+  <title id="title">gh-issues-pr-export workflow</title>
+  <desc id="desc">GitHub issues and pull requests flow through raw JSON, Markdown export, attachment download, and local archive folders.</desc>
+  <rect width="960" height="420" rx="28" fill="#f7faf8"/>
+  <path d="M0 310 C120 270 220 350 350 300 C470 255 550 230 690 270 C790 300 870 290 960 250 L960 420 L0 420 Z" fill="#dbeafe"/>
+  <path d="M0 255 C140 210 245 255 360 230 C480 200 575 115 720 145 C820 165 890 205 960 170 L960 420 L0 420 Z" fill="#dcfce7" opacity=".78"/>
+  <g fill="none" stroke="#0f172a" stroke-linecap="round" stroke-linejoin="round" stroke-width="3">
+    <path d="M180 142h122"/>
+    <path d="m288 128 18 14-18 14"/>
+    <path d="M420 142h122"/>
+    <path d="m528 128 18 14-18 14"/>
+    <path d="M660 142h122"/>
+    <path d="m768 128 18 14-18 14"/>
+  </g>
+  <g font-family="Inter, Arial, sans-serif">
+    <g>
+      <rect x="58" y="76" width="124" height="132" rx="18" fill="#ffffff" stroke="#cbd5e1"/>
+      <circle cx="120" cy="122" r="25" fill="#111827"/>
+      <path d="M109 126c-2 0-4-2-4-5 0-5 5-9 12-9 9 0 15 5 15 13 0 9-7 13-15 13-4 0-8-1-11-3" fill="none" stroke="#ffffff" stroke-linecap="round" stroke-width="5"/>
+      <text x="120" y="171" fill="#0f172a" font-size="18" font-weight="700" text-anchor="middle">GitHub</text>
+      <text x="120" y="193" fill="#475569" font-size="13" text-anchor="middle">issues + PRs</text>
+    </g>
+    <g>
+      <rect x="300" y="76" width="124" height="132" rx="18" fill="#ffffff" stroke="#cbd5e1"/>
+      <rect x="333" y="106" width="58" height="74" rx="8" fill="#e0f2fe" stroke="#0284c7"/>
+      <path d="M347 128h30M347 145h30M347 162h20" stroke="#0369a1" stroke-linecap="round" stroke-width="5"/>
+      <text x="362" y="226" fill="#0f172a" font-size="18" font-weight="700" text-anchor="middle">Raw JSON</text>
+      <text x="362" y="248" fill="#475569" font-size="13" text-anchor="middle">offline cache</text>
+    </g>
+    <g>
+      <rect x="542" y="76" width="124" height="132" rx="18" fill="#ffffff" stroke="#cbd5e1"/>
+      <path d="M582 104h45l17 18v62h-62z" fill="#dcfce7" stroke="#16a34a"/>
+      <path d="M627 104v19h17" fill="none" stroke="#16a34a"/>
+      <path d="M596 136h33M596 153h33M596 170h23" stroke="#15803d" stroke-linecap="round" stroke-width="5"/>
+      <text x="604" y="226" fill="#0f172a" font-size="18" font-weight="700" text-anchor="middle">Markdown</text>
+      <text x="604" y="248" fill="#475569" font-size="13" text-anchor="middle">clean export</text>
+    </g>
+    <g>
+      <rect x="784" y="76" width="124" height="132" rx="18" fill="#ffffff" stroke="#cbd5e1"/>
+      <rect x="821" y="105" width="50" height="38" rx="7" fill="#fef3c7" stroke="#d97706"/>
+      <path d="M824 139l15-14 11 10 8-7 13 11" fill="none" stroke="#b45309" stroke-linecap="round" stroke-linejoin="round" stroke-width="4"/>
+      <path d="M812 165h68M822 181h48" stroke="#0f172a" stroke-linecap="round" stroke-width="5"/>
+      <text x="846" y="226" fill="#0f172a" font-size="18" font-weight="700" text-anchor="middle">Archive</text>
+      <text x="846" y="248" fill="#475569" font-size="13" text-anchor="middle">docs + assets</text>
+    </g>
+    <rect x="278" y="306" width="404" height="54" rx="14" fill="#0f172a"/>
+    <text x="480" y="340" fill="#e2e8f0" font-family="Cascadia Mono, Consolas, monospace" font-size="16" text-anchor="middle">export/OWNER_REPO/issues/ISSUE-123.md</text>
+  </g>
+</svg>

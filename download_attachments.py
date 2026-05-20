@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Dict, List
 
 from playwright.sync_api import sync_playwright
 
@@ -23,9 +22,9 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def load_missing(out_root: Path) -> List[Dict[str, str]]:
+def load_missing(out_root: Path) -> list[dict[str, str]]:
     files = sorted(out_root.glob("missing_attachments_*.jsonl"))
-    rows: List[Dict[str, str]] = []
+    rows: list[dict[str, str]] = []
     for f in files:
         for line in f.read_text(encoding="utf-8").splitlines():
             line = line.strip()

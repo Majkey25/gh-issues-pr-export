@@ -1,0 +1,52 @@
+name: Python
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.10"
+          - "3.12"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install tools
+        run: python -m pip install ".[attachments]" build pyright ruff
+
+      - name: Ruff check
+        run: ruff check .
+
+      - name: Pyright check
+        run: pyright --pythonpath "$pythonLocation/bin/python" .
+
+      - name: Compile Python
+        run: python -m compileall cleanup_img_ext.py download_attachments.py export_issues_prs.py
+
+      - name: Build package
+        run: python -m build
+
+      - name: Upload package artifact
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package
+          path: dist/*

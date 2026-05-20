@@ -18,18 +18,17 @@ Outputs (per repo slug under --out-root):
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
+from collections.abc import Iterable, Mapping
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
-import subprocess
-
 
 IMG_PATTERN = re.compile(
     r"!\[[^\]]*\]\(\s*(?P<md_url>[^)\s]+)(?:\s+[\"\'][^\"\']*[\"\'])?\s*\)"
@@ -84,7 +83,7 @@ def filename_from_url(url: str, index: int) -> str:
     return f"{index:03d}_{name}{ext}"
 
 
-def detect_ext_from_file(path: Path) -> Optional[str]:
+def detect_ext_from_file(path: Path) -> str | None:
     try:
         data = path.read_bytes()[:12]
     except Exception:
@@ -100,7 +99,7 @@ def detect_ext_from_file(path: Path) -> Optional[str]:
     return None
 
 
-def get_auth_token() -> Optional[str]:
+def get_auth_token() -> str | None:
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     if token:
         return token.strip()
@@ -120,13 +119,14 @@ def get_auth_token() -> Optional[str]:
         return None
 
 
-def _candidate_urls(url: str) -> List[str]:
+def _candidate_urls(url: str) -> list[str]:
     # Some GitHub attachment URLs require a download hint to avoid 400
     parsed = urlsplit(url)
     if parsed.netloc.lower() == "github.com" and parsed.path.startswith("/user-attachments/assets/"):
         if "download=1" not in parsed.query:
             return [url, url + ("&" if parsed.query else "?") + "download=1"]
     return [url]
+
 
 def _is_user_attachment(url: str) -> bool:
     parsed = urlsplit(url)
@@ -143,7 +143,7 @@ def _download_with_gh(url: str, path: Path) -> bool:
         # For user-attachments, force download=1 to get raw bytes
         if endpoint.startswith("/user-attachments/assets/") and "download=1" not in endpoint:
             endpoint = endpoint + ("&" if "?" in endpoint else "?") + "download=1"
-        result = subprocess.run(
+        subprocess.run(
             [
                 "gh",
                 "api",
@@ -168,7 +168,7 @@ def _download_with_gh(url: str, path: Path) -> bool:
     return False
 
 
-def download_image(url: str, path: Path, token: Optional[str]) -> bool:
+def download_image(url: str, path: Path, token: str | None) -> bool:
     if path.exists():
         return True
     headers = {
@@ -178,7 +178,7 @@ def download_image(url: str, path: Path, token: Optional[str]) -> bool:
     if token:
         # Use token auth (works for api.github.com and usually for github.com)
         headers["Authorization"] = f"token {token}"
-    last_exc: Optional[Exception] = None
+    last_exc: Exception | None = None
     for candidate in _candidate_urls(url):
         try:
             req = Request(candidate, headers=headers)
@@ -194,7 +194,6 @@ def download_image(url: str, path: Path, token: Optional[str]) -> bool:
             last_exc = exc
             continue
     # Fallback for github.com/user-attachments assets using gh client (auth cookies/token)
-    parsed = urlsplit(url)
     if _is_user_attachment(url):
         if _download_with_gh(url, path):
             return True
@@ -208,7 +207,7 @@ class ImageStats:
         self.attempted = 0
         self.downloaded = 0
         self.failed = 0
-        self.missing: List[Dict[str, str]] = []
+        self.missing: list[dict[str, str]] = []
 
 
 class ImageTracker:
@@ -216,7 +215,7 @@ class ImageTracker:
         self,
         assets_dir: Path,
         md_dir: Path,
-        token: Optional[str],
+        token: str | None,
         stats: ImageStats,
         missing_cb,
     ) -> None:
@@ -226,7 +225,7 @@ class ImageTracker:
         self.stats = stats
         self.missing_cb = missing_cb
         self.counter = 0
-        self.url_to_rel: Dict[str, str] = {}
+        self.url_to_rel: dict[str, str] = {}
 
     def get_local(self, url: str) -> str:
         if url in self.url_to_rel:
@@ -280,7 +279,7 @@ def replace_images(text: str, tracker: ImageTracker) -> str:
     return IMG_PATTERN.sub(repl, text)
 
 
-def parse_iso(dt: str) -> Tuple[str, float]:
+def parse_iso(dt: str) -> tuple[str, float]:
     if not dt:
         return ("", float("inf"))
     # REST uses ISO 8601 with Z; string sort works, but we want numeric
@@ -294,7 +293,7 @@ def parse_iso(dt: str) -> Tuple[str, float]:
         return (dt, float("inf"))
 
 
-def sort_comments(comments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def sort_comments(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     indexed = []
     for idx, c in enumerate(comments):
         _, ts = parse_iso(c.get("created_at") or c.get("createdAt") or "")
@@ -303,7 +302,24 @@ def sort_comments(comments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return [c for _, _, c in indexed]
 
 
-def extract_issue_fields(issue: Dict[str, Any]) -> Dict[str, Any]:
+def get_author_login(comment: Mapping[str, Any]) -> str:
+    user = comment.get("user")
+    if isinstance(user, Mapping):
+        login = user.get("login")
+        if isinstance(login, str) and login:
+            return login
+
+    author = comment.get("author")
+    if isinstance(author, Mapping):
+        login = author.get("login")
+        if isinstance(login, str) and login:
+            return login
+    if isinstance(author, str) and author:
+        return author
+    return "unknown"
+
+
+def extract_issue_fields(issue: dict[str, Any]) -> dict[str, Any]:
     return {
         "number": issue.get("number"),
         "title": issue.get("title") or "",
@@ -315,7 +331,7 @@ def extract_issue_fields(issue: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def extract_pr_fields(pr: Dict[str, Any]) -> Dict[str, Any]:
+def extract_pr_fields(pr: dict[str, Any]) -> dict[str, Any]:
     return {
         "number": pr.get("number"),
         "title": pr.get("title") or "",
@@ -327,7 +343,7 @@ def extract_pr_fields(pr: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def load_comments(path: Path) -> List[Dict[str, Any]]:
+def load_comments(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     try:
@@ -346,7 +362,7 @@ def load_comments(path: Path) -> List[Dict[str, Any]]:
     return []
 
 
-def find_related_prs(texts: Iterable[str], pr_numbers: set, owner: str, repo: str) -> List[int]:
+def find_related_prs(texts: Iterable[str], pr_numbers: set, owner: str, repo: str) -> list[int]:
     related = set()
     url_pat = re.compile(PR_URL_PATTERN_TEMPLATE.format(owner=re.escape(owner), repo=re.escape(repo)), re.IGNORECASE)
     for text in texts:
@@ -363,7 +379,7 @@ def find_related_prs(texts: Iterable[str], pr_numbers: set, owner: str, repo: st
     return sorted(related)
 
 
-def find_related_issues(pr_body: str, issue_numbers: set, owner: str, repo: str) -> List[int]:
+def find_related_issues(pr_body: str, issue_numbers: set, owner: str, repo: str) -> list[int]:
     related = set()
     if not pr_body:
         return []
@@ -379,7 +395,7 @@ def find_related_issues(pr_body: str, issue_numbers: set, owner: str, repo: str)
     return sorted(related)
 
 
-def format_related_links(numbers: List[int], base_url: str, label: str) -> str:
+def format_related_links(numbers: list[int], base_url: str, label: str) -> str:
     if not numbers:
         return "_None_"
     lines = []
@@ -390,13 +406,13 @@ def format_related_links(numbers: List[int], base_url: str, label: str) -> str:
 
 
 def write_issue_md(
-    issue: Dict[str, Any],
-    comments: List[Dict[str, Any]],
+    issue: dict[str, Any],
+    comments: list[dict[str, Any]],
     out_dir: Path,
     assets_root: Path,
-    related_prs: List[int],
+    related_prs: list[int],
     repo_url: str,
-    token: Optional[str],
+    token: str | None,
     stats: ImageStats,
     missing_cb,
 ) -> None:
@@ -413,7 +429,7 @@ def write_issue_md(
 
     comment_blocks = []
     for c in comments_sorted:
-        author = (c.get("user", {}) or {}).get("login") or c.get("author", {}).get("login") or c.get("author") or "unknown"
+        author = get_author_login(c)
         created = c.get("created_at") or c.get("createdAt") or ""
         body = c.get("body") or ""
         body = replace_images(body, tracker)
@@ -450,14 +466,14 @@ def write_issue_md(
 
 
 def write_pr_md(
-    pr: Dict[str, Any],
-    issue_comments: List[Dict[str, Any]],
-    review_comments: List[Dict[str, Any]],
+    pr: dict[str, Any],
+    issue_comments: list[dict[str, Any]],
+    review_comments: list[dict[str, Any]],
     out_dir: Path,
     assets_root: Path,
-    related_issues: List[int],
+    related_issues: list[int],
     repo_url: str,
-    token: Optional[str],
+    token: str | None,
     stats: ImageStats,
     missing_cb,
 ) -> None:
@@ -477,7 +493,7 @@ def write_pr_md(
 
     comment_blocks = []
     for c in combined_sorted:
-        author = (c.get("user", {}) or {}).get("login") or c.get("author", {}).get("login") or c.get("author") or "unknown"
+        author = get_author_login(c)
         created = c.get("created_at") or c.get("createdAt") or ""
         body = c.get("body") or ""
         body = replace_images(body, tracker)
@@ -513,7 +529,7 @@ def write_pr_md(
     md_path.write_text("\n".join(content), encoding="utf-8")
 
 
-def process_repo(repo: str, raw_root: Path, out_root: Path, token: Optional[str]) -> None:
+def process_repo(repo: str, raw_root: Path, out_root: Path, token: str | None) -> None:
     owner, name = repo.split("/", 1)
     slug = slugify_repo(repo)
     raw_dir = raw_root / slug
@@ -552,9 +568,8 @@ def process_repo(repo: str, raw_root: Path, out_root: Path, token: Optional[str]
     pr_issue_comments_dir = raw_dir / "pr_issue_comments"
     pr_review_comments_dir = raw_dir / "pr_review_comments"
 
-    total_issues = len(issues)
     stats = ImageStats()
-    missing: List[Dict[str, str]] = []
+    missing: list[dict[str, str]] = []
     total_items = len(issues) + len(prs)
     processed = 0
     last_percent = -1

@@ -7,8 +7,12 @@
 [![Issues](https://img.shields.io/github/issues/Majkey25/gh-issues-pr-export?style=flat-square)](https://github.com/Majkey25/gh-issues-pr-export/issues)
 [![PRs](https://img.shields.io/github/issues-pr/Majkey25/gh-issues-pr-export?style=flat-square)](https://github.com/Majkey25/gh-issues-pr-export/pulls)
 [![Last Commit](https://img.shields.io/github/last-commit/Majkey25/gh-issues-pr-export?style=flat-square)](https://github.com/Majkey25/gh-issues-pr-export/commits/main)
+[![Python](https://github.com/Majkey25/gh-issues-pr-export/actions/workflows/python.yml/badge.svg)](https://github.com/Majkey25/gh-issues-pr-export/actions/workflows/python.yml)
+[![Pages](https://github.com/Majkey25/gh-issues-pr-export/actions/workflows/pages.yml/badge.svg)](https://github.com/Majkey25/gh-issues-pr-export/actions/workflows/pages.yml)
 
 Export GitHub Issues and Pull Requests (including comments and images) to clean, deterministic Markdown. Built for private repos and repeatable runs.
+
+Website: https://majkey25.github.io/gh-issues-pr-export/
 
 ## Table of Contents
 - [Features](#features)

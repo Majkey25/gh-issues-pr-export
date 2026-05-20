@@ -1,5 +1,8 @@
 # Outputs
 export/
+build/
+dist/
+*.egg-info/
 
 # Virtual envs
 .venv/

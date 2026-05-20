@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import argparse
 import os
-from pathlib import Path
-from typing import Dict, Optional
 import re
+from pathlib import Path
 
 
-def detect_ext(path: Path) -> Optional[str]:
+def detect_ext(path: Path) -> str | None:
     try:
         data = path.read_bytes()[:12]
     except Exception:
@@ -40,7 +39,7 @@ def main() -> int:
         return 1
 
     # Map old relative path -> new relative path
-    rewrites: Dict[str, str] = {}
+    rewrites: dict[str, str] = {}
 
     for img in root.rglob("*.img"):
         ext = detect_ext(img)
