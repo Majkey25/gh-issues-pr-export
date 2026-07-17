@@ -18,11 +18,23 @@ const previewButton = document.getElementById("preview-button");
 const downloadButton = document.getElementById("download-button");
 const exportProgress = document.getElementById("export-progress");
 const exportStatus = document.getElementById("export-status");
+const statusDot = document.querySelector(".status-dot");
 const exportSummary = document.getElementById("export-summary");
 const summaryIssues = document.getElementById("summary-issues");
 const summaryPrs = document.getElementById("summary-prs");
 const summaryComments = document.getElementById("summary-comments");
 const exportLog = document.getElementById("export-log");
+const responsiveDetails = document.querySelectorAll("[data-responsive-details]");
+const mobileMedia = window.matchMedia("(max-width: 760px)");
+
+function syncResponsiveDetails() {
+  responsiveDetails.forEach((details) => {
+    details.open = !mobileMedia.matches;
+  });
+}
+
+syncResponsiveDetails();
+mobileMedia.addEventListener("change", syncResponsiveDetails);
 
 tabs.forEach((tab) => {
   tab.addEventListener("click", () => {
@@ -31,7 +43,7 @@ tabs.forEach((tab) => {
     tabs.forEach((item) => {
       const active = item === tab;
       item.classList.toggle("is-active", active);
-      item.setAttribute("aria-selected", String(active));
+      item.setAttribute("aria-pressed", String(active));
     });
 
     panels.forEach((panel) => {
@@ -62,22 +74,31 @@ document.querySelectorAll("[data-copy]").forEach((button) => {
 });
 
 function parseRepository(value) {
-  const input = value.trim().replace(/\.git$/, "");
+  const input = value.trim();
   if (!input) {
     throw new Error("Enter a GitHub repository URL or OWNER/REPO.");
   }
 
+  const direct = input.replace(/\.git$/, "").match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/);
+  if (direct) {
+    return { owner: direct[1], repo: direct[2] };
+  }
+
+  let url;
   try {
-    const url = new URL(input);
-    if (url.hostname.toLowerCase() !== "github.com") {
-      throw new Error("Only github.com repository URLs are supported.");
-    }
-    const [owner, repo] = url.pathname.split("/").filter(Boolean);
-    if (owner && repo) {
-      return { owner, repo: repo.replace(/\.git$/, "") };
-    }
+    url = new URL(input);
   } catch {
-    const match = input.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/);
+    throw new Error("Use a repository URL like https://github.com/OWNER/REPO or OWNER/REPO.");
+  }
+
+  if (!/^https?:$/.test(url.protocol) || url.hostname.toLowerCase() !== "github.com") {
+    throw new Error("Only github.com repository URLs are supported.");
+  }
+
+  const parts = url.pathname.split("/").filter(Boolean);
+  if (parts.length === 2) {
+    const normalized = `${parts[0]}/${parts[1].replace(/\.git$/, "")}`;
+    const match = normalized.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/);
     if (match) {
       return { owner: match[1], repo: match[2] };
     }
@@ -100,8 +121,9 @@ function setBusy(busy) {
   exportProgress.hidden = !busy;
 }
 
-function setStatus(message) {
+function setStatus(message, isError = false) {
   exportStatus.textContent = message;
+  statusDot.classList.toggle("is-error", isError);
 }
 
 function setProgress(done, total) {
@@ -119,12 +141,12 @@ function addLog(message) {
 
 function resetUi() {
   exportLog.replaceChildren();
-  exportSummary.hidden = true;
-  summaryIssues.textContent = "0";
-  summaryPrs.textContent = "0";
-  summaryComments.textContent = "0";
+  exportSummary.hidden = false;
+  summaryIssues.textContent = "—";
+  summaryPrs.textContent = "—";
+  summaryComments.textContent = "—";
   exportProgress.value = 0;
-  setStatus("Ready.");
+  setStatus("Ready to export.");
 }
 
 function requestHeaders(token) {
@@ -176,12 +198,21 @@ async function mapWithLimit(items, worker, onDone) {
   const results = new Array(items.length);
   let next = 0;
   let done = 0;
+  let failed = false;
 
   async function run() {
-    while (next < items.length) {
+    while (!failed && next < items.length) {
       const index = next;
       next += 1;
-      results[index] = await worker(items[index], index);
+      try {
+        results[index] = await worker(items[index], index);
+      } catch (error) {
+        failed = true;
+        throw error;
+      }
+      if (failed) {
+        return;
+      }
       done += 1;
       onDone(done, items.length);
     }
@@ -440,8 +471,9 @@ async function runExport(download) {
       addLog("Counts loaded. Use Download export ZIP to save files.");
     }
   } catch (error) {
-    setStatus(error.message);
-    addLog(error.message);
+    const message = error instanceof Error ? error.message : "Export failed.";
+    setStatus(message, true);
+    addLog(message);
   } finally {
     setBusy(false);
   }
