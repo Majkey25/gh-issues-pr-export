@@ -160,9 +160,10 @@ function requestHeaders(token) {
   return headers;
 }
 
-async function requestJson(path, token) {
+async function requestJson(path, token, signal) {
   const response = await fetch(`${CONFIG.apiBaseUrl}${path}`, {
     headers: requestHeaders(token),
+    signal,
   });
   const text = await response.text();
   const data = text ? JSON.parse(text) : null;
@@ -173,16 +174,17 @@ async function requestJson(path, token) {
   return data;
 }
 
-async function fetchPage(path, page, token) {
+async function fetchPage(path, page, token, signal) {
   const separator = path.includes("?") ? "&" : "?";
-  return requestJson(`${path}${separator}per_page=100&page=${page}`, token);
+  return requestJson(`${path}${separator}per_page=100&page=${page}`, token, signal);
 }
 
-async function fetchPaginated(path, token, label) {
+async function fetchPaginated(path, token, label, signal) {
   const rows = [];
   for (let page = 1; page <= CONFIG.maxPages; page += 1) {
+    signal.throwIfAborted();
     addLog(`${label}: page ${page}`);
-    const data = await fetchPage(path, page, token);
+    const data = await fetchPage(path, page, token, signal);
     if (!Array.isArray(data)) {
       throw new Error(`${label} did not return a list.`);
     }
@@ -318,7 +320,7 @@ function updateSummary(issues, prs, commentMaps) {
   exportSummary.hidden = false;
 }
 
-async function fetchCommentMaps(repo, token, issues, prs) {
+async function fetchCommentMaps(repo, token, issues, prs, signal) {
   const maps = {
     issueComments: {},
     prIssueComments: {},
@@ -338,6 +340,7 @@ async function fetchCommentMaps(repo, token, issues, prs) {
           `/repos/${repo.owner}/${repo.repo}/issues/${task.number}/comments`,
           token,
           `Issue #${task.number} comments`,
+          signal,
         );
       }
       if (task.kind === "pr-issue") {
@@ -345,6 +348,7 @@ async function fetchCommentMaps(repo, token, issues, prs) {
           `/repos/${repo.owner}/${repo.repo}/issues/${task.number}/comments`,
           token,
           `PR #${task.number} comments`,
+          signal,
         );
       }
       if (task.kind === "pr-review") {
@@ -352,6 +356,7 @@ async function fetchCommentMaps(repo, token, issues, prs) {
           `/repos/${repo.owner}/${repo.repo}/pulls/${task.number}/comments`,
           token,
           `PR #${task.number} review comments`,
+          signal,
         );
       }
     },
@@ -364,26 +369,26 @@ async function fetchCommentMaps(repo, token, issues, prs) {
   return maps;
 }
 
-async function fetchExportData(includeComments) {
+async function fetchExportData(includeComments, signal) {
   const repo = parseRepository(repoInput.value);
   const token = tokenInput.value.trim();
   addLog(`Repository: ${repo.owner}/${repo.repo}`);
   setStatus("Fetching repository metadata.");
-  const metadata = await requestJson(`/repos/${repo.owner}/${repo.repo}`, token);
+  const metadata = await requestJson(`/repos/${repo.owner}/${repo.repo}`, token, signal);
 
-  setStatus("Fetching issues.");
-  const allIssues = await fetchPaginated(`/repos/${repo.owner}/${repo.repo}/issues?state=all`, token, "Issues");
+  setStatus("Fetching issues and pull requests.");
+  const [allIssues, prs] = await Promise.all([
+    fetchPaginated(`/repos/${repo.owner}/${repo.repo}/issues?state=all`, token, "Issues", signal),
+    fetchPaginated(`/repos/${repo.owner}/${repo.repo}/pulls?state=all`, token, "Pull requests", signal),
+  ]);
   const issues = allIssues.filter((issue) => !issue.pull_request);
-
-  setStatus("Fetching pull requests.");
-  const prs = await fetchPaginated(`/repos/${repo.owner}/${repo.repo}/pulls?state=all`, token, "Pull requests");
 
   const emptyMaps = {
     issueComments: Object.fromEntries(issues.map((issue) => [issue.number, []])),
     prIssueComments: Object.fromEntries(prs.map((pr) => [pr.number, []])),
     prReviewComments: Object.fromEntries(prs.map((pr) => [pr.number, []])),
   };
-  const commentMaps = includeComments ? await fetchCommentMaps(repo, token, issues, prs) : emptyMaps;
+  const commentMaps = includeComments ? await fetchCommentMaps(repo, token, issues, prs, signal) : emptyMaps;
   updateSummary(issues, prs, commentMaps);
   return { repo, metadata, allIssues, issues, prs, commentMaps, includeComments };
 }
@@ -456,10 +461,11 @@ async function buildZip(data, includeRaw) {
 }
 
 async function runExport(download) {
+  const controller = new AbortController();
   resetUi();
   setBusy(true);
   try {
-    const data = await fetchExportData(commentsInput.checked);
+    const data = await fetchExportData(commentsInput.checked, controller.signal);
     if (download) {
       setStatus("Building ZIP.");
       const blob = await buildZip(data, rawInput.checked);
@@ -475,6 +481,7 @@ async function runExport(download) {
     setStatus(message, true);
     addLog(message);
   } finally {
+    controller.abort();
     setBusy(false);
   }
 }

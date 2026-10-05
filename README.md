@@ -156,6 +156,10 @@ export/missing_attachments_<repo>.jsonl
 - Missing images -> Run Step 3 (attachments downloader).
 
 ## Contributing
+
+Browser request regression checks use Node.js 24, with no npm dependencies:
+`node --test tests/browser-export.test.mjs`. They cover parallel lists, sibling
+cancellation, retry and comment-worker failure; CI runs them on every PR.
 - Open an issue for bugs or feature requests.
 - PRs are welcome. Keep changes focused and add notes in the PR description.
 
