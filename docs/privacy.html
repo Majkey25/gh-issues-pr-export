@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="no-referrer">
+    <title>Privacy and use | gh-issues-pr-export</title>
+    <style>
+      body { max-width: 48rem; margin: 2rem auto; padding: 0 1rem; font: 1rem/1.6 system-ui, sans-serif; color: #17202e; background: white; }
+      a { color: #9a3412; } :focus-visible { outline: 3px solid #9a3412; outline-offset: 3px; }
+    </style>
+  </head>
+  <body>
+    <nav aria-label="Back"><a href="./">Back to exporter</a></nav>
+    <main>
+      <h1>Privacy and use</h1>
+      <p>Updated 5 October 2026. Maintainer: Matěj Teplý (Majkey), <a href="mailto:majkeylab@gmail.com">majkeylab@gmail.com</a>.</p>
+      <h2>Repository data and tokens</h2>
+      <p>This browser app sends your chosen repository and optional personal access token directly to GitHub's API to fetch issues, pull requests, and comments. The token is used in the authorization header. Export data is processed in the tab and packaged into a ZIP on your device. The maintainer has no application backend receiving this data.</p>
+      <p>The app does not use analytics, accounts of its own, cookies, or local storage. Token and results remain in the open tab. Clear the token field and close the tab when finished; your browser may offer session restoration. Delete downloaded archives separately and revoke a token in GitHub settings if it is no longer needed. Never send a token in a support request.</p>
+      <h2>Services contacted by the website</h2>
+      <p>GitHub Pages receives technical requests, including IP addresses, to serve and secure the site. GitHub's API receives the authenticated export requests. The ZIP library loads from cdnjs, operated by Cloudflare, which receives your IP address and ordinary request metadata when the page loads. See the <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub privacy statement</a> and <a href="https://www.cloudflare.com/privacypolicy/">Cloudflare privacy policy</a> for their retention, international transfers, and privacy contacts.</p>
+      <h2>Contact and privacy rights</h2>
+      <p>Email addresses and messages sent to the maintainer are used to answer and document support requests, based on the legitimate interest in providing support. They are kept only while needed for that purpose or applicable legal obligations.</p>
+      <p>Contact the maintainer to request access, correction, deletion, restriction, or object to processing of information the maintainer holds. Portability applies where provided by law. You may complain to the <a href="https://uoou.gov.cz/">Czech data protection authority</a> or your local authority. GitHub and Cloudflare handle requests concerning their own records.</p>
+      <h2>Permitted use and fees</h2>
+      <p>Export only repositories you are authorized to access. Issues and comments may contain other people's personal information; keep exports secure and share them only where authorized. This tool has no purchases, subscriptions, or fees and no in-app refund process. The <a href="https://github.com/Majkey25/gh-issues-pr-export/blob/main/LICENSE">MIT license</a> covers the source. Mandatory legal rights remain unaffected.</p>
+      <h2>Python CLI</h2>
+      <p>The separately installed CLI stores exports and optional raw JSON on your computer. Its attachment downloader can keep an authenticated browser profile. Delete those files and profiles locally when no longer needed. This website cannot erase them.</p>
+    </main>
+  </body>
+</html>
