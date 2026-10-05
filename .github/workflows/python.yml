@@ -11,6 +11,16 @@ permissions:
   contents: read
 
 jobs:
+  browser-export:
+    name: Browser export request regression
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: node --test tests/browser-export.test.mjs
+
   quality:
     runs-on: ubuntu-latest
     strategy:
