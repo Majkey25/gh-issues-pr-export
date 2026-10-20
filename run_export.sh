@@ -70,6 +70,18 @@ fi
 
 mkdir -p "$RAW_ROOT"
 
+gh_api_to_file() {
+  local output="$1" temporary
+  shift
+  temporary="$(mktemp "${output}.XXXXXX")"
+  if gh api "$@" > "$temporary"; then
+    mv -- "$temporary" "$output"
+  else
+    rm -f -- "$temporary"
+    return 1
+  fi
+}
+
 for repo in "${REPOS[@]}"; do
   if [[ "$repo" != */* ]]; then
     echo "ERROR: invalid repo format: $repo (expected OWNER/REPO)" >&2
@@ -84,14 +96,28 @@ for repo in "${REPOS[@]}"; do
   mkdir -p "$base/issue_comments" "$base/pr_issue_comments" "$base/pr_review_comments"
 
   echo "==> Fetching issues for $repo"
-  gh api -X GET "repos/${owner}/${name}/issues" -f state=all -f per_page=100 --paginate > "$base/issues.json"
+  gh_api_to_file "$base/issues.json" -X GET "repos/${owner}/${name}/issues" -f state=all -f per_page=100 --paginate
 
   echo "==> Fetching PRs for $repo"
-  gh api -X GET "repos/${owner}/${name}/pulls" -f state=all -f per_page=100 --paginate > "$base/prs.json"
+  gh_api_to_file "$base/prs.json" -X GET "repos/${owner}/${name}/pulls" -f state=all -f per_page=100 --paginate
 
   echo "==> Fetching issue comments for $repo"
   OWNER="$owner" REPO="$name" BASE="$base" python3 - <<'PY'
-import json, os, subprocess
+import json, os, subprocess, tempfile
+
+def gh_api_to_file(endpoint, output):
+    descriptor, temporary = tempfile.mkstemp(dir=os.path.dirname(output))
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as target:
+            subprocess.run(
+                ["gh", "api", "-X", "GET", endpoint, "-f", "per_page=100", "--paginate"],
+                check=True,
+                stdout=target,
+            )
+        os.replace(temporary, output)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 owner = os.environ["OWNER"]
 repo = os.environ["REPO"]
@@ -105,12 +131,7 @@ for issue in issues:
         continue
     num = issue["number"]
     out = f"{base}/issue_comments/ISSUE-{num}.json"
-    with open(out, "w", encoding="utf-8") as w:
-        subprocess.run(
-            ["gh", "api", "-X", "GET", f"repos/{owner}/{repo}/issues/{num}/comments", "-f", "per_page=100", "--paginate"],
-            check=True,
-            stdout=w,
-        )
+    gh_api_to_file(f"repos/{owner}/{repo}/issues/{num}/comments", out)
 
 with open(f"{base}/prs.json", "r", encoding="utf-8") as f:
     prs = json.load(f)
@@ -118,20 +139,10 @@ with open(f"{base}/prs.json", "r", encoding="utf-8") as f:
 for pr in prs:
     num = pr["number"]
     out_issue = f"{base}/pr_issue_comments/PR-{num}.json"
-    with open(out_issue, "w", encoding="utf-8") as w:
-        subprocess.run(
-            ["gh", "api", "-X", "GET", f"repos/{owner}/{repo}/issues/{num}/comments", "-f", "per_page=100", "--paginate"],
-            check=True,
-            stdout=w,
-        )
+    gh_api_to_file(f"repos/{owner}/{repo}/issues/{num}/comments", out_issue)
 
     out_review = f"{base}/pr_review_comments/PR-{num}.json"
-    with open(out_review, "w", encoding="utf-8") as w:
-        subprocess.run(
-            ["gh", "api", "-X", "GET", f"repos/{owner}/{repo}/pulls/{num}/comments", "-f", "per_page=100", "--paginate"],
-            check=True,
-            stdout=w,
-        )
+    gh_api_to_file(f"repos/{owner}/{repo}/pulls/{num}/comments", out_review)
 PY
 
 done

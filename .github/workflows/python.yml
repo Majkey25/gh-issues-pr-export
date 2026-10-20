@@ -51,6 +51,9 @@ jobs:
       - name: Compile Python
         run: python -m compileall cleanup_img_ext.py download_attachments.py export_issues_prs.py
 
+      - name: Python regressions
+        run: python -m unittest discover -s tests -v
+
       - name: Build package
         run: python -m build
 
