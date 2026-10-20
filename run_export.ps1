@@ -92,6 +92,9 @@ function GhApiToFile {
     [string]$OutPath
   )
   $output = & gh @GhArgs
+  if ($LASTEXITCODE -ne 0) {
+    throw "ERROR: gh api failed with exit code $LASTEXITCODE; raw file preserved: $OutPath"
+  }
   [System.IO.File]::WriteAllText($OutPath, $output, $utf8NoBom)
 }
 
@@ -169,5 +172,6 @@ foreach ($repo in $Repos) {
 
 $pyArgs = @($scriptPath, "--raw-root", $RawRoot, "--out-root", $OutRoot) + $repoArgs
 & $py @pyArgs
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host "Done. Output is in $OutRoot/"

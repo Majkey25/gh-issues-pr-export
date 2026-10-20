@@ -23,6 +23,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from collections.abc import Iterable, Mapping
 from datetime import datetime
 from pathlib import Path
@@ -169,37 +170,44 @@ def _download_with_gh(url: str, path: Path) -> bool:
 
 
 def download_image(url: str, path: Path, token: str | None) -> bool:
-    if path.exists():
+    if path.is_file() and path.stat().st_size > 0:
         return True
     headers = {
         "User-Agent": "gh-issue-export/1.0",
         "Accept": "application/octet-stream",
     }
-    if token:
-        # Use token auth (works for api.github.com and usually for github.com)
-        headers["Authorization"] = f"token {token}"
-    last_exc: Exception | None = None
-    for candidate in _candidate_urls(url):
-        try:
-            req = Request(candidate, headers=headers)
-            with urlopen(req) as resp:
-                ensure_dir(path.parent)
-                with path.open("wb") as f:
-                    chunk = resp.read(1024 * 1024)
-                    while chunk:
-                        f.write(chunk)
-                        chunk = resp.read(1024 * 1024)
+    ensure_dir(path.parent)
+    descriptor, temporary_name = tempfile.mkstemp(dir=path.parent, suffix=".part")
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    try:
+        last_exc: Exception | None = None
+        for candidate in _candidate_urls(url):
+            try:
+                req = Request(candidate, headers=headers)
+                parsed = urlsplit(candidate)
+                if token and parsed.scheme == "https" and parsed.hostname in {"github.com", "api.github.com"}:
+                    # Redirect targets must never inherit GitHub credentials.
+                    req.add_unredirected_header("Authorization", f"token {token}")
+                with urlopen(req) as resp, temporary.open("wb") as output:
+                    while chunk := resp.read(1024 * 1024):
+                        output.write(chunk)
+                if temporary.stat().st_size == 0:
+                    raise OSError("empty image response")
+                temporary.replace(path)
+                return True
+            except Exception as exc:
+                last_exc = exc
+                continue
+        # Fallback for github.com/user-attachments assets using gh client (auth cookies/token)
+        if _is_user_attachment(url) and _download_with_gh(url, temporary):
+            temporary.replace(path)
             return True
-        except Exception as exc:
-            last_exc = exc
-            continue
-    # Fallback for github.com/user-attachments assets using gh client (auth cookies/token)
-    if _is_user_attachment(url):
-        if _download_with_gh(url, path):
-            return True
-    if not _is_user_attachment(url):
-        eprint(f"WARN: Failed to download {url}: {last_exc}")
-    return False
+        if not _is_user_attachment(url):
+            eprint(f"WARN: Failed to download {url}: {last_exc}")
+        return False
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 class ImageStats:
@@ -537,18 +545,15 @@ def process_repo(repo: str, raw_root: Path, out_root: Path, token: str | None) -
     issues_path = raw_dir / "issues.json"
     prs_path = raw_dir / "prs.json"
     if not issues_path.exists() or not prs_path.exists():
-        eprint(f"ERROR: Missing raw files for {repo}. Expected {issues_path} and {prs_path}.")
-        return
+        raise FileNotFoundError(f"Missing raw files for {repo}. Expected {issues_path} and {prs_path}.")
 
     issues_raw = load_json(issues_path)
     prs_raw = load_json(prs_path)
 
     if not isinstance(issues_raw, list):
-        eprint(f"ERROR: {issues_path} is not a list. Make sure you used gh api --paginate.")
-        return
+        raise ValueError(f"{issues_path} is not a list. Make sure you used gh api --paginate.")
     if not isinstance(prs_raw, list):
-        eprint(f"ERROR: {prs_path} is not a list. Make sure you used gh api --paginate.")
-        return
+        raise ValueError(f"{prs_path} is not a list. Make sure you used gh api --paginate.")
 
     issues = [extract_issue_fields(i) for i in issues_raw if "pull_request" not in i]
     prs = [extract_pr_fields(p) for p in prs_raw]
@@ -689,7 +694,11 @@ def main() -> int:
         if "/" not in repo:
             eprint(f"ERROR: Invalid repo format: {repo}")
             return 1
-        process_repo(repo, raw_root, out_root, token)
+        try:
+            process_repo(repo, raw_root, out_root, token)
+        except (OSError, ValueError) as exc:
+            eprint(f"ERROR: {exc}")
+            return 1
 
     return 0
 
