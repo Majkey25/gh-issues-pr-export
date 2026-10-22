@@ -5,6 +5,9 @@ const CONFIG = {
   maxPages: 50,
   logLimit: 80,
   zipCompressionLevel: 6,
+  maxResponseBytes: 16 * 1024 * 1024,
+  maxExportBytes: 64 * 1024 * 1024,
+  maxExportRows: 50000,
 };
 
 const tabs = document.querySelectorAll("[data-tab]");
@@ -160,31 +163,56 @@ function requestHeaders(token) {
   return headers;
 }
 
-async function requestJson(path, token, signal) {
+async function requestJson(path, token, signal, budget) {
   const response = await fetch(`${CONFIG.apiBaseUrl}${path}`, {
     headers: requestHeaders(token),
     signal,
   });
-  const text = await response.text();
+  const reader = response.body?.getReader();
+  const decoder = new TextDecoder();
+  let text = "", bytes = 0;
+  if (reader) {
+    try {
+      while (true) {
+        signal.throwIfAborted();
+        const { done, value } = await reader.read();
+        if (done) break;
+        bytes += value.byteLength;
+        budget.bytes += value.byteLength;
+        if (bytes > CONFIG.maxResponseBytes || budget.bytes > CONFIG.maxExportBytes) {
+          throw new Error("Browser export byte limit exceeded. Use the Python CLI for this repository.");
+        }
+        text += decoder.decode(value, { stream: true });
+      }
+      text += decoder.decode();
+    } finally {
+      await reader.cancel();
+      reader.releaseLock();
+    }
+  }
   const data = text ? JSON.parse(text) : null;
   if (!response.ok) {
     const message = data?.message || response.statusText;
     throw new Error(`GitHub API ${response.status}: ${message}`);
   }
+  budget.rows += Array.isArray(data) ? data.length : 0;
+  if (budget.rows > CONFIG.maxExportRows) {
+    throw new Error("Browser export row limit exceeded. Use the Python CLI for this repository.");
+  }
   return data;
 }
 
-async function fetchPage(path, page, token, signal) {
+async function fetchPage(path, page, token, signal, budget) {
   const separator = path.includes("?") ? "&" : "?";
-  return requestJson(`${path}${separator}per_page=100&page=${page}`, token, signal);
+  return requestJson(`${path}${separator}per_page=100&page=${page}`, token, signal, budget);
 }
 
-async function fetchPaginated(path, token, label, signal) {
+async function fetchPaginated(path, token, label, signal, budget) {
   const rows = [];
   for (let page = 1; page <= CONFIG.maxPages; page += 1) {
     signal.throwIfAborted();
     addLog(`${label}: page ${page}`);
-    const data = await fetchPage(path, page, token, signal);
+    const data = await fetchPage(path, page, token, signal, budget);
     if (!Array.isArray(data)) {
       throw new Error(`${label} did not return a list.`);
     }
@@ -320,7 +348,7 @@ function updateSummary(issues, prs, commentMaps) {
   exportSummary.hidden = false;
 }
 
-async function fetchCommentMaps(repo, token, issues, prs, signal) {
+async function fetchCommentMaps(repo, token, issues, prs, signal, budget) {
   const maps = {
     issueComments: {},
     prIssueComments: {},
@@ -341,6 +369,7 @@ async function fetchCommentMaps(repo, token, issues, prs, signal) {
           token,
           `Issue #${task.number} comments`,
           signal,
+          budget,
         );
       }
       if (task.kind === "pr-issue") {
@@ -349,6 +378,7 @@ async function fetchCommentMaps(repo, token, issues, prs, signal) {
           token,
           `PR #${task.number} comments`,
           signal,
+          budget,
         );
       }
       if (task.kind === "pr-review") {
@@ -357,6 +387,7 @@ async function fetchCommentMaps(repo, token, issues, prs, signal) {
           token,
           `PR #${task.number} review comments`,
           signal,
+          budget,
         );
       }
     },
@@ -370,16 +401,17 @@ async function fetchCommentMaps(repo, token, issues, prs, signal) {
 }
 
 async function fetchExportData(includeComments, signal) {
+  const budget = { bytes: 0, rows: 0 };
   const repo = parseRepository(repoInput.value);
   const token = tokenInput.value.trim();
   addLog(`Repository: ${repo.owner}/${repo.repo}`);
   setStatus("Fetching repository metadata.");
-  const metadata = await requestJson(`/repos/${repo.owner}/${repo.repo}`, token, signal);
+  const metadata = await requestJson(`/repos/${repo.owner}/${repo.repo}`, token, signal, budget);
 
   setStatus("Fetching issues and pull requests.");
   const [allIssues, prs] = await Promise.all([
-    fetchPaginated(`/repos/${repo.owner}/${repo.repo}/issues?state=all`, token, "Issues", signal),
-    fetchPaginated(`/repos/${repo.owner}/${repo.repo}/pulls?state=all`, token, "Pull requests", signal),
+    fetchPaginated(`/repos/${repo.owner}/${repo.repo}/issues?state=all`, token, "Issues", signal, budget),
+    fetchPaginated(`/repos/${repo.owner}/${repo.repo}/pulls?state=all`, token, "Pull requests", signal, budget),
   ]);
   const issues = allIssues.filter((issue) => !issue.pull_request);
 
@@ -388,7 +420,7 @@ async function fetchExportData(includeComments, signal) {
     prIssueComments: Object.fromEntries(prs.map((pr) => [pr.number, []])),
     prReviewComments: Object.fromEntries(prs.map((pr) => [pr.number, []])),
   };
-  const commentMaps = includeComments ? await fetchCommentMaps(repo, token, issues, prs, signal) : emptyMaps;
+  const commentMaps = includeComments ? await fetchCommentMaps(repo, token, issues, prs, signal, budget) : emptyMaps;
   updateSummary(issues, prs, commentMaps);
   return { repo, metadata, allIssues, issues, prs, commentMaps, includeComments };
 }
@@ -399,6 +431,14 @@ async function buildZip(data, includeRaw) {
   }
 
   const zip = new window.JSZip();
+  let zipBytes = 0;
+  function addFile(path, content) {
+    zipBytes += new TextEncoder().encode(content).byteLength;
+    if (zipBytes > CONFIG.maxExportBytes) {
+      throw new Error("Browser ZIP byte limit exceeded. Use the Python CLI for this repository.");
+    }
+    zip.file(path, content);
+  }
   const slug = repoSlug(data.repo);
   const repoRoot = `export/${slug}`;
   const rawRoot = `export/raw/${slug}`;
@@ -412,13 +452,13 @@ async function buildZip(data, includeRaw) {
   };
 
   data.issues.forEach((issue) => {
-    zip.file(
+    addFile(
       `${repoRoot}/issues/ISSUE-${issue.number}.md`,
       issueMarkdown(issue, data.commentMaps.issueComments[issue.number] || [], data.includeComments),
     );
   });
   data.prs.forEach((pr) => {
-    zip.file(
+    addFile(
       `${repoRoot}/prs/PR-${pr.number}.md`,
       prMarkdown(
         pr,
@@ -428,25 +468,25 @@ async function buildZip(data, includeRaw) {
       ),
     );
   });
-  zip.file(`${repoRoot}/summary.json`, JSON.stringify(summary, null, 2));
-  zip.file(`${repoRoot}/README.md`, `# ${data.repo.owner}/${data.repo.repo} export\n\nExported at ${summary.exported_at}.\n`);
+  addFile(`${repoRoot}/summary.json`, JSON.stringify(summary, null, 2));
+  addFile(`${repoRoot}/README.md`, `# ${data.repo.owner}/${data.repo.repo} export\n\nExported at ${summary.exported_at}.\n`);
 
   if (includeRaw) {
-    zip.file(`${rawRoot}/repo.json`, JSON.stringify(data.metadata, null, 2));
-    zip.file(`${rawRoot}/issues.json`, JSON.stringify(data.allIssues, null, 2));
-    zip.file(`${rawRoot}/prs.json`, JSON.stringify(data.prs, null, 2));
+    addFile(`${rawRoot}/repo.json`, JSON.stringify(data.metadata, null, 2));
+    addFile(`${rawRoot}/issues.json`, JSON.stringify(data.allIssues, null, 2));
+    addFile(`${rawRoot}/prs.json`, JSON.stringify(data.prs, null, 2));
     data.issues.forEach((issue) => {
-      zip.file(
+      addFile(
         `${rawRoot}/issue_comments/ISSUE-${issue.number}.json`,
         JSON.stringify(data.commentMaps.issueComments[issue.number] || [], null, 2),
       );
     });
     data.prs.forEach((pr) => {
-      zip.file(
+      addFile(
         `${rawRoot}/pr_issue_comments/PR-${pr.number}.json`,
         JSON.stringify(data.commentMaps.prIssueComments[pr.number] || [], null, 2),
       );
-      zip.file(
+      addFile(
         `${rawRoot}/pr_review_comments/PR-${pr.number}.json`,
         JSON.stringify(data.commentMaps.prReviewComments[pr.number] || [], null, 2),
       );
