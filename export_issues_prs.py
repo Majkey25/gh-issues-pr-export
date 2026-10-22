@@ -18,18 +18,28 @@ Outputs (per repo slug under --out-root):
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
 import re
-import subprocess
+import socket
+import ssl
 import sys
 import tempfile
+import threading
+import time
 from collections.abc import Iterable, Mapping
 from datetime import datetime
+from http.client import HTTPConnection
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+from urllib.parse import urljoin, urlsplit
+
+MAX_IMAGE_BYTES = 25 * 1024 * 1024
+MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
+MAX_DOWNLOADS = 1000
+DOWNLOAD_TIMEOUT = 30
+EXPORT_TIMEOUT = 15 * 60
 
 IMG_PATTERN = re.compile(
     r"!\[[^\]]*\]\(\s*(?P<md_url>[^)\s]+)(?:\s+[\"\'][^\"\']*[\"\'])?\s*\)"
@@ -52,7 +62,32 @@ def eprint(*args: Any) -> None:
 
 
 def slugify_repo(repo: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) or any(
+        part in {".", ".."} for part in repo.split("/")
+    ):
+        raise ValueError("Invalid repository name")
     return repo.replace("/", "_")
+
+
+def export_path(root: Path, relative: str) -> Path:
+    parts = relative.split("/")
+    if any(
+        not part or part in {".", ".."} or part.endswith((".", " "))
+        or re.search(r'[\\:<>"|?*\x00-\x1f]', part)
+        or re.fullmatch(r"(?i)(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?", part)
+        for part in parts
+    ):
+        raise ValueError("Invalid export path")
+    target = root.joinpath(*parts)
+    if not target.resolve().is_relative_to(root.resolve()):
+        raise ValueError("Export path escapes output root")
+    return target
+
+
+def item_number(value: Any) -> int:
+    if type(value) is not int or not 0 < value <= 2**53 - 1:
+        raise ValueError("Issue/PR number must be a positive integer")
+    return value
 
 
 def load_json(path: Path) -> Any:
@@ -78,15 +113,16 @@ def filename_from_url(url: str, index: int) -> str:
         base = "image"
     name, ext = os.path.splitext(base)
     name = sanitize_name(name)[:40]
-    ext = ext.lower()
-    if not ext or len(ext) > 10:
+    ext = sanitize_name(ext.lower()) if ext else ""
+    if not ext or ext == "." or len(ext) > 10:
         ext = ".img"
     return f"{index:03d}_{name}{ext}"
 
 
 def detect_ext_from_file(path: Path) -> str | None:
     try:
-        data = path.read_bytes()[:12]
+        with path.open("rb") as stream:
+            data = stream.read(12)
     except Exception:
         return None
     if data.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -134,48 +170,56 @@ def _is_user_attachment(url: str) -> bool:
     return parsed.netloc.lower() == "github.com" and parsed.path.startswith("/user-attachments/assets/")
 
 
-def _download_with_gh(url: str, path: Path) -> bool:
-    try:
-        ensure_dir(path.parent)
-        parsed = urlsplit(url)
-        endpoint = parsed.path
-        if parsed.query:
-            endpoint = f"{endpoint}?{parsed.query}"
-        # For user-attachments, force download=1 to get raw bytes
-        if endpoint.startswith("/user-attachments/assets/") and "download=1" not in endpoint:
-            endpoint = endpoint + ("&" if "?" in endpoint else "?") + "download=1"
-        subprocess.run(
-            [
-                "gh",
-                "api",
-                "-X",
-                "GET",
-                "--hostname",
-                "github.com",
-                "-H",
-                "Accept: application/octet-stream",
-                endpoint,
-                "-o",
-                str(path),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        if path.exists() and path.stat().st_size > 0:
-            return True
-    except Exception:
+class DownloadBudget:
+    def __init__(self) -> None:
+        self.count = 0
+        self.bytes = 0
+        self.deadline = time.monotonic() + EXPORT_TIMEOUT
+
+
+def public_connection(url: str) -> HTTPConnection:
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError("Only public HTTP(S) image URLs are allowed")
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    addresses = socket.getaddrinfo(parsed.hostname, port, type=socket.SOCK_STREAM)
+    for _, _, _, _, address in addresses:
+        ip = ipaddress.ip_address(address[0])
+        if not ip.is_global or ip.is_multicast or ip.is_reserved:
+            raise ValueError("Non-public image destination refused")
+    if not addresses:
+        raise OSError("Image destination has no addresses")
+    # Connect to the checked address, so a second DNS lookup cannot change the destination.
+    deadline = time.monotonic() + DOWNLOAD_TIMEOUT
+    last_error: OSError | None = None
+    for family, kind, protocol, _, address in addresses:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Image connection time limit exceeded")
+        sock = socket.socket(family, kind, protocol)
+        try:
+            sock.settimeout(remaining)
+            sock.connect(address)
+            connection = HTTPConnection(parsed.hostname, port, timeout=DOWNLOAD_TIMEOUT)
+            if parsed.scheme == "https":
+                context = ssl.create_default_context()
+                context.set_alpn_protocols(["http/1.1"])
+                sock = context.wrap_socket(sock, server_hostname=parsed.hostname)
+            connection.sock = sock
+            return connection
+        except OSError as exc:
+            last_error = exc
+            sock.close()
+    raise OSError("Could not connect to image destination") from last_error
+
+
+def download_image(
+    url: str, path: Path, token: str | None, budget: DownloadBudget | None = None, *, cookie: str = "",
+) -> bool:
+    budget = budget if budget is not None else DownloadBudget()
+    if budget.count >= MAX_DOWNLOADS or budget.bytes >= MAX_DOWNLOAD_BYTES or time.monotonic() >= budget.deadline:
         return False
-    return False
-
-
-def download_image(url: str, path: Path, token: str | None) -> bool:
-    if path.is_file() and path.stat().st_size > 0:
-        return True
-    headers = {
-        "User-Agent": "gh-issue-export/1.0",
-        "Accept": "application/octet-stream",
-    }
+    budget.count += 1
     ensure_dir(path.parent)
     descriptor, temporary_name = tempfile.mkstemp(dir=path.parent, suffix=".part")
     os.close(descriptor)
@@ -184,25 +228,68 @@ def download_image(url: str, path: Path, token: str | None) -> bool:
         last_exc: Exception | None = None
         for candidate in _candidate_urls(url):
             try:
-                req = Request(candidate, headers=headers)
-                parsed = urlsplit(candidate)
-                if token and parsed.scheme == "https" and parsed.hostname in {"github.com", "api.github.com"}:
-                    # Redirect targets must never inherit GitHub credentials.
-                    req.add_unredirected_header("Authorization", f"token {token}")
-                with urlopen(req) as resp, temporary.open("wb") as output:
-                    while chunk := resp.read(1024 * 1024):
-                        output.write(chunk)
-                if temporary.stat().st_size == 0:
-                    raise OSError("empty image response")
-                temporary.replace(path)
-                return True
+                for redirects in range(6):
+                    if time.monotonic() >= budget.deadline:
+                        raise TimeoutError("Export download time limit exceeded")
+                    parsed = urlsplit(candidate)
+                    headers = {"User-Agent": "gh-issue-export/1.0", "Accept": "application/octet-stream"}
+                    if redirects == 0 and parsed.scheme == "https":
+                        if token and parsed.hostname in {"github.com", "api.github.com"}:
+                            headers["Authorization"] = f"token {token}"
+                        if cookie and parsed.hostname == "github.com":
+                            headers["Cookie"] = cookie
+                    connection = public_connection(candidate)
+                    sock = connection.sock
+
+                    def interrupt(sock: socket.socket | None = sock) -> None:
+                        try:
+                            if sock is not None:
+                                sock.shutdown(socket.SHUT_RDWR)
+                        except OSError:
+                            pass
+
+                    request_deadline = min(time.monotonic() + DOWNLOAD_TIMEOUT, budget.deadline)
+                    timer = threading.Timer(max(0, request_deadline - time.monotonic()), interrupt)
+                    timer.daemon = True
+                    timer.start()
+                    try:
+                        endpoint = parsed.path or "/"
+                        if parsed.query:
+                            endpoint += f"?{parsed.query}"
+                        connection.request("GET", endpoint, headers=headers)
+                        with connection.getresponse() as resp:
+                            if resp.status in {301, 302, 303, 307, 308}:
+                                location = resp.getheader("Location")
+                                if not location or redirects == 5:
+                                    raise ValueError("Invalid or excessive image redirects")
+                                candidate = urljoin(candidate, location)
+                                continue
+                            if resp.status != 200:
+                                raise OSError(f"Image HTTP status {resp.status}")
+                            length = resp.getheader("Content-Length")
+                            remaining = min(MAX_IMAGE_BYTES, MAX_DOWNLOAD_BYTES - budget.bytes)
+                            if length is not None and not 0 < int(length) <= remaining:
+                                raise ValueError("Image response exceeds byte limit or is empty")
+                            size = 0
+                            with temporary.open("wb") as output:
+                                while chunk := resp.read1(min(64 * 1024, remaining - size + 1)):
+                                    size += len(chunk)
+                                    budget.bytes += len(chunk)
+                                    if size > remaining or time.monotonic() >= request_deadline:
+                                        raise ValueError("Image download budget exceeded")
+                                    output.write(chunk)
+                            if time.monotonic() >= request_deadline:
+                                raise TimeoutError("Image response time limit exceeded")
+                            if size == 0 or (length is not None and size != int(length)):
+                                raise OSError("Empty or incomplete image response")
+                        temporary.replace(path)
+                        return True
+                    finally:
+                        timer.cancel()
+                        connection.close()
             except Exception as exc:
                 last_exc = exc
                 continue
-        # Fallback for github.com/user-attachments assets using gh client (auth cookies/token)
-        if _is_user_attachment(url) and _download_with_gh(url, temporary):
-            temporary.replace(path)
-            return True
         if not _is_user_attachment(url):
             eprint(f"WARN: Failed to download {url}: {last_exc}")
         return False
@@ -216,6 +303,7 @@ class ImageStats:
         self.downloaded = 0
         self.failed = 0
         self.missing: list[dict[str, str]] = []
+        self.budget = DownloadBudget()
 
 
 class ImageTracker:
@@ -234,6 +322,7 @@ class ImageTracker:
         self.missing_cb = missing_cb
         self.counter = 0
         self.url_to_rel: dict[str, str] = {}
+        self.downloaded_paths: set[Path] = set()
 
     def get_local(self, url: str) -> str:
         if url in self.url_to_rel:
@@ -241,8 +330,8 @@ class ImageTracker:
         self.counter += 1
         self.stats.attempted += 1
         filename = filename_from_url(url, self.counter)
-        abs_path = self.assets_dir / filename
-        ok = download_image(url, abs_path, self.token)
+        abs_path = export_path(self.assets_dir, filename)
+        ok = download_image(url, abs_path, self.token, self.stats.budget)
         if not ok:
             self.stats.failed += 1
             rel = os.path.relpath(abs_path, self.md_dir)
@@ -255,18 +344,25 @@ class ImageTracker:
         if abs_path.suffix.lower() == ".img":
             real_ext = detect_ext_from_file(abs_path)
             if real_ext:
-                new_path = abs_path.with_suffix(real_ext)
+                new_path = export_path(self.assets_dir, abs_path.with_suffix(real_ext).name)
                 try:
-                    abs_path.rename(new_path)
+                    abs_path.replace(new_path)
                     abs_path = new_path
                 except Exception:
                     # If rename fails, keep .img
                     pass
         self.stats.downloaded += 1
+        self.downloaded_paths.add(abs_path.resolve())
         rel = os.path.relpath(abs_path, self.md_dir)
         rel = rel.replace(os.sep, "/")
         self.url_to_rel[url] = rel
         return rel
+
+    def remove_stale(self) -> None:
+        if self.assets_dir.exists():
+            for path in self.assets_dir.iterdir():
+                if re.fullmatch(r"\d{3,}_[A-Za-z0-9._-]+", path.name) and path.resolve() not in self.downloaded_paths:
+                    export_path(self.assets_dir, path.name).unlink()
 
 
 def replace_images(text: str, tracker: ImageTracker) -> str:
@@ -329,7 +425,7 @@ def get_author_login(comment: Mapping[str, Any]) -> str:
 
 def extract_issue_fields(issue: dict[str, Any]) -> dict[str, Any]:
     return {
-        "number": issue.get("number"),
+        "number": item_number(issue.get("number")),
         "title": issue.get("title") or "",
         "url": issue.get("html_url") or issue.get("url") or "",
         "state": (issue.get("state") or "").upper(),
@@ -341,7 +437,7 @@ def extract_issue_fields(issue: dict[str, Any]) -> dict[str, Any]:
 
 def extract_pr_fields(pr: dict[str, Any]) -> dict[str, Any]:
     return {
-        "number": pr.get("number"),
+        "number": item_number(pr.get("number")),
         "title": pr.get("title") or "",
         "url": pr.get("html_url") or pr.get("url") or "",
         "state": (pr.get("state") or "").upper(),
@@ -424,9 +520,9 @@ def write_issue_md(
     stats: ImageStats,
     missing_cb,
 ) -> None:
-    num = issue["number"]
-    md_path = out_dir / f"ISSUE-{num}.md"
-    assets_dir = assets_root / str(num)
+    num = item_number(issue["number"])
+    md_path = export_path(out_dir, f"ISSUE-{num}.md")
+    assets_dir = export_path(assets_root, str(num))
     tracker = ImageTracker(assets_dir, md_path.parent, token, stats, missing_cb)
 
     desc = replace_images(issue["body"], tracker)
@@ -471,6 +567,7 @@ def write_issue_md(
 
     ensure_dir(md_path.parent)
     md_path.write_text("\n".join(content), encoding="utf-8")
+    tracker.remove_stale()
 
 
 def write_pr_md(
@@ -485,9 +582,9 @@ def write_pr_md(
     stats: ImageStats,
     missing_cb,
 ) -> None:
-    num = pr["number"]
-    md_path = out_dir / f"PR-{num}.md"
-    assets_dir = assets_root / str(num)
+    num = item_number(pr["number"])
+    md_path = export_path(out_dir, f"PR-{num}.md")
+    assets_dir = export_path(assets_root, str(num))
     tracker = ImageTracker(assets_dir, md_path.parent, token, stats, missing_cb)
 
     desc = replace_images(pr["body"], tracker)
@@ -535,6 +632,7 @@ def write_pr_md(
 
     ensure_dir(md_path.parent)
     md_path.write_text("\n".join(content), encoding="utf-8")
+    tracker.remove_stale()
 
 
 def process_repo(repo: str, raw_root: Path, out_root: Path, token: str | None) -> None:
@@ -563,11 +661,10 @@ def process_repo(repo: str, raw_root: Path, out_root: Path, token: str | None) -
 
     repo_url = f"https://github.com/{owner}/{name}"
 
-    out_repo = out_root / slug
-    issues_dir = out_repo / "issues"
-    prs_dir = out_repo / "prs"
-    assets_issues = out_repo / "assets" / "issues"
-    assets_prs = out_repo / "assets" / "prs"
+    issues_dir = export_path(out_root, f"{slug}/issues")
+    prs_dir = export_path(out_root, f"{slug}/prs")
+    assets_issues = export_path(out_root, f"{slug}/assets/issues")
+    assets_prs = export_path(out_root, f"{slug}/assets/prs")
 
     issue_comments_dir = raw_dir / "issue_comments"
     pr_issue_comments_dir = raw_dir / "pr_issue_comments"
@@ -655,11 +752,12 @@ def process_repo(repo: str, raw_root: Path, out_root: Path, token: str | None) -
         f"({stats.failed} failed)",
         flush=True,
     )
+    ensure_dir(out_root)
+    missing_path = export_path(out_root, f"missing_attachments_{slug}.jsonl")
+    with missing_path.open("w", encoding="utf-8") as f:
+        for row in missing:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
     if missing:
-        missing_path = out_root / f"missing_attachments_{slugify_repo(repo)}.jsonl"
-        with missing_path.open("w", encoding="utf-8") as f:
-            for row in missing:
-                f.write(json.dumps(row, ensure_ascii=False) + "\n")
         print(f"[{repo}] Missing attachments list: {missing_path}", flush=True)
 
 

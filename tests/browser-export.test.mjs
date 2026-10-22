@@ -21,7 +21,7 @@ function app(transport) {
     return nodes.get(id);
   }
   const context = vm.createContext({
-    AbortController, URL,
+    AbortController, URL, TextDecoder, TextEncoder,
     window: { matchMedia: () => ({ matches: false, addEventListener() {} }) },
     document: {
       querySelectorAll: () => [], getElementById: element, querySelector: element,
@@ -35,8 +35,48 @@ function app(transport) {
   });
   vm.runInContext(source, context, { filename: 'docs/script.js' });
   element('repo-input').value = 'fixture/example';
-  return { run: () => context.runExport(false), element };
+  return { run: () => context.runExport(false), element, context };
 }
+
+test('aggregate response and row budgets cancel exports and reset on retry', async () => {
+  for (const limit of ['maxExportBytes = 40', 'maxExportRows = 1']) {
+    const instance = app(path => response(path.endsWith('/issues') || path.endsWith('/pulls')
+      ? [{ number: 1, title: 'budget fixture' }] : { name: 'example' }));
+    vm.runInContext(`CONFIG.${limit}`, instance.context);
+    await instance.run();
+    assert.match(instance.element('export-status').textContent, /limit exceeded/);
+    assert.equal(instance.element('download-button').disabled, false);
+    vm.runInContext('CONFIG.maxExportBytes = 4096; CONFIG.maxExportRows = 10', instance.context);
+    await instance.run();
+    assert.equal(instance.element('export-status').textContent, 'Preview ready.');
+  }
+});
+
+test('response stream is cancelled at its byte limit before JSON parsing', async () => {
+  let cancelled = false;
+  const instance = app(() => new Response(new ReadableStream({
+    pull(controller) { controller.enqueue(new TextEncoder().encode('unbounded')); },
+    cancel() { cancelled = true; },
+  })));
+  vm.runInContext('CONFIG.maxResponseBytes = 10', instance.context);
+  await instance.run();
+  assert.equal(cancelled, true);
+  assert.match(instance.element('export-status').textContent, /byte limit exceeded/);
+});
+
+test('ZIP budget refuses excess content before compression', async () => {
+  const instance = app(() => response([]));
+  let compressed = false;
+  instance.context.window.JSZip = class {
+    file() {}
+    generateAsync() { compressed = true; }
+  };
+  vm.runInContext('CONFIG.maxExportBytes = 10', instance.context);
+  await assert.rejects(instance.context.buildZip({
+    repo: { owner: 'fixture', repo: 'example' }, issues: [], prs: [], includeComments: false,
+  }, false), /ZIP byte limit exceeded/);
+  assert.equal(compressed, false);
+});
 
 test('issue and PR list requests overlap after metadata validation', async () => {
   const issue = Promise.withResolvers();

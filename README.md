@@ -148,6 +148,11 @@ export/missing_attachments_<repo>.jsonl
 - Do not commit `export/`, `.env`, or any token.
 - Use `gh auth login` instead of hardcoding credentials.
 - If exports were ever committed, remove them from Git history.
+- Image downloads accept only public HTTP(S) destinations, including redirects, and connect directly without proxy settings.
+- Downloads are limited to 25 MiB per image, 512 MiB and 1,000 images per repository or recovery run, with a 15-minute budget and 30-second socket/response limits. DNS resolution follows OS timeouts. Failed images are listed for recovery.
+- Recovery processes up to 1,000 pending rows at a time. Successful rows are removed atomically from each manifest; failures and unprocessed rows remain for another run.
+- Re-exporting an item refreshes its images and removes obsolete generated image files. Items absent from the raw input remain in the export tree; use a new output directory when sharing only current items.
+- Browser exports stop at 16 MiB per API response, 64 MiB of aggregate API data or ZIP input, or 50,000 aggregate rows. Use the CLI for larger exports.
 
 ## Troubleshooting
 - `gh: Invalid request` -> Re-run (scripts already use `-X GET`).
